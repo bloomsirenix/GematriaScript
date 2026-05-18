@@ -555,38 +555,51 @@ class UnifiedBibleProcessor:
     
     def run_video_mode(self):
         """Run video recording mode"""
-        recorder = VideoRecorder(self.output_file, self.fps, self.max_size, self.use_ffmpeg)
-        viewer = None
-        root = None
+        import sys
+        import io
         
-        if self.enable_gui:
-            try:
-                root = tk.Tk()
-                viewer = LiveViewer(root, self.max_size)
-                viewer.update_display()
-                
-                def gui_thread():
-                    root.mainloop()
-                
-                threading.Thread(target=gui_thread, daemon=True).start()
-            except Exception as e:
-                print(f"Failed to initialize GUI: {e}")
-                self.enable_gui = False
-        
-        generator = self.processor.process_all_programs(limit=self.limit)
-        last_frame_time = time.time()
+        # Redirect stdout to suppress binary spam
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
         
         try:
+            recorder = VideoRecorder(self.output_file, self.fps, self.max_size, self.use_ffmpeg)
+            viewer = None
+            root = None
+            
+            if self.enable_gui:
+                # Restore stdout for GUI
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                try:
+                    root = tk.Tk()
+                    viewer = LiveViewer(root, self.max_size)
+                    viewer.update_display()
+                    
+                    def gui_thread():
+                        root.mainloop()
+                    
+                    threading.Thread(target=gui_thread, daemon=True).start()
+                except Exception as e:
+                    print(f"Failed to initialize GUI: {e}")
+                    self.enable_gui = False
+                # Redirect again for processing
+                sys.stdout = io.StringIO()
+                sys.stderr = io.StringIO()
+            
+            generator = self.processor.process_all_programs(limit=self.limit)
+            last_frame_time = time.time()
+            
             for chunk in generator:
                 self.data.extend(chunk)
                 
                 # Check max execution time
                 if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
-                    print(f"\nMax execution time ({self.max_execution_time}s) reached, stopping...")
                     break
                 
                 if not recorder.running:
-                    print("Recorder stopped, exiting...")
                     break
                 
                 if time.time() - last_frame_time >= 1.0 / self.fps:
@@ -594,7 +607,6 @@ class UnifiedBibleProcessor:
                     
                     # Check max video duration
                     if self.max_video_duration and (recorder.frame_count / self.fps) >= self.max_video_duration:
-                        print(f"\nMax video duration ({self.max_video_duration}s) reached, stopping...")
                         break
                     
                     if recorder.use_ffmpeg and recorder.ffmpeg_process is None:
@@ -610,11 +622,18 @@ class UnifiedBibleProcessor:
                     if self.enable_gui and viewer:
                         viewer.update_data(chunk)
                     
+                    # Restore stdout for progress updates
+                    sys.stdout = old_stdout
                     if recorder.frame_count % 10 == 0:
                         print(f"Frames: {recorder.frame_count:5d} | Bytes: {len(self.data):,}", end="\r")
+                    sys.stdout = io.StringIO()
         except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
             print(f"\nError during video recording: {e}")
         finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
             recorder.cleanup()
             
             if self.enable_gui and viewer:
@@ -627,20 +646,32 @@ class UnifiedBibleProcessor:
     
     def run_image_mode(self):
         """Run final image generation mode"""
-        generator = self.processor.process_all_programs(limit=self.limit)
+        import sys
+        import io
+        
+        # Redirect stdout to suppress binary spam
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
         
         try:
+            generator = self.processor.process_all_programs(limit=self.limit)
+            
             for chunk in generator:
                 self.data.extend(chunk)
-                print(f"Received {len(self.data):,} bytes", end="\r")
                 
                 # Check max execution time
                 if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
-                    print(f"\nMax execution time ({self.max_execution_time}s) reached, stopping...")
                     break
         except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
             print(f"\nError during processing: {e}")
             return
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
         
         print(f"\nGenerating image from {len(self.data):,} bytes...")
         
@@ -670,6 +701,9 @@ class UnifiedBibleProcessor:
     
     def run_raw_mode(self):
         """Run raw byte output mode"""
+        import sys
+        import io
+        
         generator = self.processor.process_all_programs(limit=self.limit)
         
         try:
@@ -677,11 +711,9 @@ class UnifiedBibleProcessor:
                 for chunk in generator:
                     f.write(chunk)
                     self.data.extend(chunk)
-                    print(f"Written {len(self.data):,} bytes", end="\r")
                     
                     # Check max execution time
                     if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
-                        print(f"\nMax execution time ({self.max_execution_time}s) reached, stopping...")
                         break
         except Exception as e:
             print(f"\nError writing raw data: {e}")
