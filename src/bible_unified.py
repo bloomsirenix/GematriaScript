@@ -260,7 +260,9 @@ class VideoRecorder:
         print(f"\nVideo saved: {self.output_file}")
         print(f"Frames: {self.frame_count}")
         print(f"Bytes: {len(self.data):,}")
-        print(f"Duration: {time.time() - self.start_time:.1f}s")
+        video_duration = self.frame_count / self.fps if self.fps > 0 else 0
+        print(f"Video duration: {video_duration:.2f}s ({self.frame_count} frames @ {self.fps}fps)")
+        print(f"Processing duration: {time.time() - self.start_time:.1f}s")
 
 
 class ScreenRecorder:
@@ -408,9 +410,11 @@ class ScreenRecorder:
                 self.ffmpeg_process.kill()
         
         elapsed = time.time() - self.start_time
+        video_duration = self.frame_count / self.fps if self.fps > 0 else 0
         print(f"\nRecording saved: {self.output_file}")
         print(f"Frames: {self.frame_count}")
-        print(f"Duration: {elapsed:.1f}s")
+        print(f"Video duration: {video_duration:.2f}s ({self.frame_count} frames @ {self.fps}fps)")
+        print(f"Processing duration: {elapsed:.1f}s")
 
 
 class LiveViewer:
@@ -504,6 +508,7 @@ class UnifiedBibleProcessor:
     
     def run(self):
         """Main execution loop"""
+        self.start_time = time.time()
         print(f"Mode: {self.mode}")
         print(f"Output: {self.output_file}")
         print(f"Processing with {'CUDA' if self.use_cuda else 'CPU'}\n")
@@ -518,6 +523,10 @@ class UnifiedBibleProcessor:
             self.run_screen_mode()
         else:
             self.run_raw_mode()
+        
+        # Print execution time
+        elapsed = time.time() - self.start_time
+        print(f"\nExecution time: {elapsed:.2f}s")
     
     def run_live_mode(self):
         """Run live GUI viewer mode"""
@@ -629,6 +638,7 @@ class UnifiedBibleProcessor:
             cv2.imwrite(self.output_file, frame)
             print(f"Image saved: {self.output_file}")
             print(f"Size: {frame.shape[1]}x{frame.shape[0]}")
+            print(f"Bytes processed: {len(self.data):,}")
         except Exception as e:
             print(f"Error saving image: {e}")
     
