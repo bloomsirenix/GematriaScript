@@ -420,7 +420,7 @@ class HybridExecutor:
             self.gpu_available = True
         except ImportError:
             self.gpu_available = False
-            print("GPU runner not available, falling back to CPU")
+            # print("GPU runner not available, falling back to CPU")
         
         # Import CPU interpreter
         from .gematria_compiler import BytecodeInterpreter

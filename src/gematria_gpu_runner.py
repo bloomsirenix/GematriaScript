@@ -15,7 +15,6 @@ try:
     CUDA_AVAILABLE = True
 except ImportError:
     CUDA_AVAILABLE = False
-    print("PyCUDA not available, falling back to CPU")
 
 try:
     import pyopencl as cl
@@ -37,7 +36,8 @@ class GematriaGPUInterpreter:
             print("Using OpenCL for GPU acceleration")
             self.init_opencl()
         else:
-            print("GPU acceleration not available, using CPU")
+            # print("GPU acceleration not available, using CPU")
+            pass
     
     def init_cuda(self):
         """Initialize CUDA"""
