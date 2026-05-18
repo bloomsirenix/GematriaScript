@@ -90,6 +90,7 @@ class GematriaProcessor:
             yield b"-" * 80 + b"\n"
         
         start_time = time.time()
+        total_bytes = 0
         
         with Pool(self.workers) as pool:
             args_list = [(prog, self.programs_dir, self.use_cuda) for prog in programs]
@@ -98,20 +99,30 @@ class GematriaProcessor:
                 if result['success'] and result.get('output'):
                     output = result['output']
                     if isinstance(output, bytes):
+                        output_bytes = output
                         output = output.decode('utf-8', errors='ignore')
+                    else:
+                        output_bytes = output.encode('utf-8', errors='ignore') if isinstance(output, str) else str(output).encode('utf-8', errors='ignore')
+                    
                     program_name = str(result.get('program', 'unknown'))
                     output_str = str(output)[:100]
+                    
                     if not self.quiet:
                         output_line = b"%s: %s\n" % (program_name.encode('utf-8'), output_str.encode('utf-8'))
                         yield output_line
+                    else:
+                        # In quiet mode, yield raw output bytes for video/image generation
+                        yield output_bytes
                 
                 if i % 10 == 0:
                     elapsed = time.time() - start_time
-                    progress = b"Progress: %d/%d (%.1f%%)\n" % (i, len(programs), i/len(programs)*100)
-                    yield progress
+                    if not self.quiet:
+                        progress = b"Progress: %d/%d (%.1f%%)\n" % (i, len(programs), i/len(programs)*100)
+                        yield progress
         
         elapsed = time.time() - start_time
         yield b"\nComplete! Processed %d programs in %.2fs\n" % (len(programs), elapsed)
+        yield b"Total output bytes: %d\n" % total_bytes
 
 
 class ImageGenerator:
@@ -497,6 +508,7 @@ class UnifiedBibleProcessor:
         self.limit = limit
         self.max_execution_time = max_execution_time
         self.max_video_duration = max_video_duration
+        self.total_output_bytes = 0
         
         self.processor = GematriaProcessor(use_cuda=use_cuda, quiet=(mode in ['video', 'image', 'screen']))
         self.data = bytearray()
@@ -557,43 +569,43 @@ class UnifiedBibleProcessor:
         """Run video recording mode"""
         import sys
         import io
+        import os
         
-        # Redirect stdout to suppress binary spam
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
+        # Only suppress subprocess output, not generator output
+        recorder = VideoRecorder(self.output_file, self.fps, self.max_size, self.use_ffmpeg)
+        viewer = None
+        root = None
+        
+        if self.enable_gui:
+            try:
+                root = tk.Tk()
+                viewer = LiveViewer(root, self.max_size)
+                viewer.update_display()
+                
+                def gui_thread():
+                    root.mainloop()
+                
+                threading.Thread(target=gui_thread, daemon=True).start()
+            except Exception as e:
+                print(f"Failed to initialize GUI: {e}")
+                self.enable_gui = False
+        
+        generator = self.processor.process_all_programs(limit=self.limit)
+        last_frame_time = time.time()
+        programs_processed = 0
+        processing_complete = False
         
         try:
-            recorder = VideoRecorder(self.output_file, self.fps, self.max_size, self.use_ffmpeg)
-            viewer = None
-            root = None
-            
-            if self.enable_gui:
-                # Restore stdout for GUI
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
-                try:
-                    root = tk.Tk()
-                    viewer = LiveViewer(root, self.max_size)
-                    viewer.update_display()
-                    
-                    def gui_thread():
-                        root.mainloop()
-                    
-                    threading.Thread(target=gui_thread, daemon=True).start()
-                except Exception as e:
-                    print(f"Failed to initialize GUI: {e}")
-                    self.enable_gui = False
-                # Redirect again for processing
-                sys.stdout = io.StringIO()
-                sys.stderr = io.StringIO()
-            
-            generator = self.processor.process_all_programs(limit=self.limit)
-            last_frame_time = time.time()
-            
             for chunk in generator:
                 self.data.extend(chunk)
+                
+                # Track programs processed
+                if b"sequence_" in chunk:
+                    programs_processed += 1
+                
+                # Check if processing is complete
+                if b"Complete!" in chunk:
+                    processing_complete = True
                 
                 # Check max execution time
                 if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
@@ -602,8 +614,14 @@ class UnifiedBibleProcessor:
                 if not recorder.running:
                     break
                 
+                # Generate frames continuously based on data, not just at fps intervals
                 if time.time() - last_frame_time >= 1.0 / self.fps:
-                    frame = recorder.get_frame()
+                    # Generate frame from current data
+                    if len(self.data) > 100:  # Only use data if we have enough
+                        frame = recorder.get_frame()
+                    else:
+                        # Generate synthetic frame if no data yet
+                        frame = self._generate_synthetic_frame(programs_processed, processing_complete)
                     
                     # Check max video duration
                     if self.max_video_duration and (recorder.frame_count / self.fps) >= self.max_video_duration:
@@ -622,18 +640,30 @@ class UnifiedBibleProcessor:
                     if self.enable_gui and viewer:
                         viewer.update_data(chunk)
                     
-                    # Restore stdout for progress updates
-                    sys.stdout = old_stdout
                     if recorder.frame_count % 10 == 0:
-                        print(f"Frames: {recorder.frame_count:5d} | Bytes: {len(self.data):,}", end="\r")
-                    sys.stdout = io.StringIO()
+                        print(f"Frames: {recorder.frame_count:5d} | Bytes: {len(self.data):,} | Programs: {programs_processed}", end="\r")
+            
+            # Continue generating frames after processing is done to ensure minimum video length
+            min_frames = self.fps * 5  # At least 5 seconds of video
+            while recorder.frame_count < min_frames and recorder.running:
+                if time.time() - last_frame_time >= 1.0 / self.fps:
+                    frame = self._generate_synthetic_frame(programs_processed, True)
+                    
+                    if recorder.use_ffmpeg and recorder.ffmpeg_process is None:
+                        recorder.start_ffmpeg(frame)
+                    elif not recorder.use_ffmpeg and recorder.writer is None:
+                        recorder.start_cv2(frame)
+                    
+                    if recorder.running:
+                        recorder.write_frame(frame)
+                        recorder.frame_count += 1
+                        last_frame_time = time.time()
+                    
+                    if recorder.frame_count % 10 == 0:
+                        print(f"Frames: {recorder.frame_count:5d} | Programs: {programs_processed}", end="\r")
         except Exception as e:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
             print(f"\nError during video recording: {e}")
         finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
             recorder.cleanup()
             
             if self.enable_gui and viewer:
@@ -644,20 +674,32 @@ class UnifiedBibleProcessor:
                 except:
                     pass
     
+    def _generate_synthetic_frame(self, programs_processed, complete=False):
+        """Generate a synthetic video frame based on processing state"""
+        import numpy as np
+        
+        # Create a colorful pattern based on programs processed
+        size = self.max_size
+        frame = np.zeros((size, size, 3), dtype=np.uint8)
+        
+        # Generate a pattern that changes with programs_processed
+        for i in range(size):
+            for j in range(size):
+                # Create a gradient pattern
+                r = int((i / size) * 255)
+                g = int((j / size) * 255)
+                # Add animation based on frame count and completion
+                offset = programs_processed * 10 + (100 if complete else 0)
+                b = int(((i + j + offset) / (size * 2)) * 255)
+                frame[i, j] = [r, g, b]
+        
+        return frame
+    
     def run_image_mode(self):
         """Run final image generation mode"""
-        import sys
-        import io
-        
-        # Redirect stdout to suppress binary spam
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
+        generator = self.processor.process_all_programs(limit=self.limit)
         
         try:
-            generator = self.processor.process_all_programs(limit=self.limit)
-            
             for chunk in generator:
                 self.data.extend(chunk)
                 
@@ -665,13 +707,8 @@ class UnifiedBibleProcessor:
                 if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
                     break
         except Exception as e:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
             print(f"\nError during processing: {e}")
             return
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
         
         print(f"\nGenerating image from {len(self.data):,} bytes...")
         
@@ -701,9 +738,6 @@ class UnifiedBibleProcessor:
     
     def run_raw_mode(self):
         """Run raw byte output mode"""
-        import sys
-        import io
-        
         generator = self.processor.process_all_programs(limit=self.limit)
         
         try:
