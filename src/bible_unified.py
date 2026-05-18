@@ -129,27 +129,48 @@ class ImageGenerator:
     """Generates images from byte data"""
     
     @staticmethod
-    def bytes_to_image(data, max_size=1024):
+    def bytes_to_image(data, max_size=1024, aspect_ratio=None):
         """Convert bytes to numpy image array"""
         if len(data) < 3:
             return np.zeros((512, 512, 3), dtype=np.uint8)
+        
+        # Calculate dimensions based on aspect ratio
+        if aspect_ratio:
+            if ':' in aspect_ratio:
+                ar_w, ar_h = map(int, aspect_ratio.split(':'))
+            else:
+                ar_w, ar_h = 16, 9  # Default 16:9
+        else:
+            ar_w, ar_h = 1, 1  # Square
+        
+        # Calculate dimensions
+        if ar_w >= ar_h:
+            width = max_size
+            height = int(max_size * ar_h / ar_w)
+        else:
+            height = max_size
+            width = int(max_size * ar_w / ar_h)
+        
+        # Ensure even dimensions
+        width = width + (width % 2)
+        height = height + (height % 2)
         
         padding = (3 - len(data) % 3) % 3
         padded = data + b'\x00' * padding
         
         num_pixels = len(padded) // 3
-        width = max(1, int(math.sqrt(num_pixels)))
-        height = math.ceil(num_pixels / width)
+        calc_width = max(1, int(math.sqrt(num_pixels * ar_w / ar_h)))
+        calc_height = math.ceil(num_pixels / calc_width)
         
-        total = width * height * 3
+        total = calc_width * calc_height * 3
         final_bytes = padded + b'\x00' * (total - len(padded))
         
-        frame = np.frombuffer(final_bytes, dtype=np.uint8).reshape((height, width, 3))
+        frame = np.frombuffer(final_bytes, dtype=np.uint8).reshape((calc_height, calc_width, 3))
         
-        if width > max_size or height > max_size:
-            scale = max_size / max(width, height)
-            new_w = int(width * scale)
-            new_h = int(height * scale)
+        if calc_width > width or calc_height > height:
+            scale = min(width / calc_width, height / calc_height)
+            new_w = int(calc_width * scale)
+            new_h = int(calc_height * scale)
             frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
         
         return frame
@@ -497,7 +518,7 @@ class UnifiedBibleProcessor:
     
     def __init__(self, mode='video', output_file=None, fps=20, max_size=1024, 
                  use_cuda=True, use_ffmpeg=True, enable_gui=False, limit=None,
-                 max_execution_time=None, max_video_duration=None):
+                 max_execution_time=None, max_video_duration=None, aspect_ratio=None):
         self.mode = mode
         self.output_file = output_file
         self.fps = fps
@@ -508,6 +529,7 @@ class UnifiedBibleProcessor:
         self.limit = limit
         self.max_execution_time = max_execution_time
         self.max_video_duration = max_video_duration
+        self.aspect_ratio = aspect_ratio
         self.total_output_bytes = 0
         
         self.processor = GematriaProcessor(use_cuda=use_cuda, quiet=(mode in ['video', 'image', 'screen']))
@@ -661,6 +683,10 @@ class UnifiedBibleProcessor:
                     
                     if recorder.frame_count % 10 == 0:
                         print(f"Frames: {recorder.frame_count:5d} | Programs: {programs_processed}", end="\r")
+            
+            # Ensure writer is properly flushed
+            if recorder.writer:
+                recorder.writer.release()
         except Exception as e:
             print(f"\nError during video recording: {e}")
         finally:
@@ -678,19 +704,38 @@ class UnifiedBibleProcessor:
         """Generate a synthetic video frame based on processing state"""
         import numpy as np
         
-        # Create a colorful pattern based on programs processed
-        size = self.max_size
-        frame = np.zeros((size, size, 3), dtype=np.uint8)
+        # Calculate dimensions based on aspect ratio
+        if self.aspect_ratio:
+            if ':' in self.aspect_ratio:
+                ar_w, ar_h = map(int, self.aspect_ratio.split(':'))
+            else:
+                ar_w, ar_h = 16, 9  # Default 16:9
+        else:
+            ar_w, ar_h = 1, 1  # Square
+        
+        # Calculate dimensions
+        if ar_w >= ar_h:
+            width = self.max_size
+            height = int(self.max_size * ar_h / ar_w)
+        else:
+            height = self.max_size
+            width = int(self.max_size * ar_w / ar_h)
+        
+        # Ensure even dimensions for video encoding
+        width = width + (width % 2)
+        height = height + (height % 2)
+        
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
         
         # Generate a pattern that changes with programs_processed
-        for i in range(size):
-            for j in range(size):
+        for i in range(height):
+            for j in range(width):
                 # Create a gradient pattern
-                r = int((i / size) * 255)
-                g = int((j / size) * 255)
+                r = int((i / height) * 255)
+                g = int((j / width) * 255)
                 # Add animation based on frame count and completion
                 offset = programs_processed * 10 + (100 if complete else 0)
-                b = int(((i + j + offset) / (size * 2)) * 255)
+                b = int(((i + j + offset) / ((width + height) / 2)) * 255)
                 frame[i, j] = [r, g, b]
         
         return frame
@@ -713,7 +758,7 @@ class UnifiedBibleProcessor:
         print(f"\nGenerating image from {len(self.data):,} bytes...")
         
         try:
-            frame = ImageGenerator.bytes_to_image(self.data, self.max_size)
+            frame = ImageGenerator.bytes_to_image(self.data, self.max_size, self.aspect_ratio)
         except Exception as e:
             print(f"Error generating image: {e}")
             return
@@ -808,6 +853,7 @@ def main():
     parser.add_argument('-o', '--output', help='Output file path')
     parser.add_argument('--fps', type=int, default=20, help='Video FPS (default: 20)')
     parser.add_argument('--size', type=int, default=1024, help='Max image/video size (default: 1024)')
+    parser.add_argument('--aspect-ratio', help='Aspect ratio (e.g., 16:9, 4:3, 1:1)')
     parser.add_argument('--no-cuda', action='store_true', help='Disable CUDA, use CPU only')
     parser.add_argument('--no-ffmpeg', action='store_true', help='Use OpenCV instead of FFmpeg for video')
     parser.add_argument('--gui', action='store_true', help='Enable GUI preview')
@@ -827,7 +873,8 @@ def main():
         enable_gui=args.gui,
         limit=args.limit,
         max_execution_time=args.max_execution_time,
-        max_video_duration=args.max_video_duration
+        max_video_duration=args.max_video_duration,
+        aspect_ratio=args.aspect_ratio
     )
     
     processor.run()

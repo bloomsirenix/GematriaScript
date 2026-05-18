@@ -397,14 +397,14 @@ class GPUBibleRunner:
         # Generate report
         self.generate_report(results, elapsed)
         
-        print()
-        print("=" * 80)
-        print("GPU EXECUTION COMPLETE")
-        print("=" * 80)
-        print(f"Programs processed: {len(results)}")
-        print(f"Time elapsed: {elapsed:.2f} seconds")
-        print(f"Average rate: {len(results)/elapsed:.1f} prog/sec")
-        print(f"Report saved to: bible_gpu_execution_report.txt")
+        # print()
+        # print("=" * 80)
+        # print("GPU EXECUTION COMPLETE")
+        # print("=" * 80)
+        # print(f"Programs processed: {len(results)}")
+        # print(f"Time elapsed: {elapsed:.2f} seconds")
+        # print(f"Average rate: {len(results)/elapsed:.1f} prog/sec")
+        # print(f"Report saved to: bible_gpu_execution_report.txt")
     
     def generate_report(self, results: list, elapsed: float):
         """Generate execution report"""
