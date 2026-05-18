@@ -55,10 +55,11 @@ def process_program(args):
 class GematriaProcessor:
     """Processes GematriaScript programs and yields byte output"""
     
-    def __init__(self, use_cuda=True, workers=None):
+    def __init__(self, use_cuda=True, workers=None, quiet=False):
         self.use_cuda = use_cuda
         self.workers = workers if workers else cpu_count()
         self.programs_dir = Path("bible_instructions")
+        self.quiet = quiet
         
     def process_all_programs(self, limit=None):
         """Process all .gs files and yield output bytes"""
@@ -84,8 +85,9 @@ class GematriaProcessor:
             programs = programs[:limit]
         
         yield b"Processing %d programs with %d workers\n" % (len(programs), self.workers)
-        yield b"GPU mode: %s\n" % ('CUDA' if self.use_cuda else 'OpenCL').encode('utf-8')
-        yield b"-" * 80 + b"\n"
+        if not self.quiet:
+            yield b"GPU mode: %s\n" % ('CUDA' if self.use_cuda else 'OpenCL').encode('utf-8')
+            yield b"-" * 80 + b"\n"
         
         start_time = time.time()
         
@@ -99,8 +101,9 @@ class GematriaProcessor:
                         output = output.decode('utf-8', errors='ignore')
                     program_name = str(result.get('program', 'unknown'))
                     output_str = str(output)[:100]
-                    output_line = b"%s: %s\n" % (program_name.encode('utf-8'), output_str.encode('utf-8'))
-                    yield output_line
+                    if not self.quiet:
+                        output_line = b"%s: %s\n" % (program_name.encode('utf-8'), output_str.encode('utf-8'))
+                        yield output_line
                 
                 if i % 10 == 0:
                     elapsed = time.time() - start_time
@@ -495,7 +498,7 @@ class UnifiedBibleProcessor:
         self.max_execution_time = max_execution_time
         self.max_video_duration = max_video_duration
         
-        self.processor = GematriaProcessor(use_cuda=use_cuda)
+        self.processor = GematriaProcessor(use_cuda=use_cuda, quiet=(mode in ['video', 'image', 'screen']))
         self.data = bytearray()
         
         if not self.output_file:
