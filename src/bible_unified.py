@@ -482,7 +482,8 @@ class UnifiedBibleProcessor:
     """Main unified processor class"""
     
     def __init__(self, mode='video', output_file=None, fps=20, max_size=1024, 
-                 use_cuda=True, use_ffmpeg=True, enable_gui=False, limit=None):
+                 use_cuda=True, use_ffmpeg=True, enable_gui=False, limit=None,
+                 max_execution_time=None, max_video_duration=None):
         self.mode = mode
         self.output_file = output_file
         self.fps = fps
@@ -491,6 +492,8 @@ class UnifiedBibleProcessor:
         self.use_ffmpeg = use_ffmpeg
         self.enable_gui = enable_gui
         self.limit = limit
+        self.max_execution_time = max_execution_time
+        self.max_video_duration = max_video_duration
         
         self.processor = GematriaProcessor(use_cuda=use_cuda)
         self.data = bytearray()
@@ -511,7 +514,12 @@ class UnifiedBibleProcessor:
         self.start_time = time.time()
         print(f"Mode: {self.mode}")
         print(f"Output: {self.output_file}")
-        print(f"Processing with {'CUDA' if self.use_cuda else 'CPU'}\n")
+        print(f"Processing with {'CUDA' if self.use_cuda else 'CPU'}")
+        if self.max_execution_time:
+            print(f"Max execution time: {self.max_execution_time}s")
+        if self.max_video_duration:
+            print(f"Max video duration: {self.max_video_duration}s")
+        print()
         
         if self.mode == 'live':
             self.run_live_mode()
@@ -569,12 +577,22 @@ class UnifiedBibleProcessor:
             for chunk in generator:
                 self.data.extend(chunk)
                 
+                # Check max execution time
+                if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
+                    print(f"\nMax execution time ({self.max_execution_time}s) reached, stopping...")
+                    break
+                
                 if not recorder.running:
                     print("Recorder stopped, exiting...")
                     break
                 
                 if time.time() - last_frame_time >= 1.0 / self.fps:
                     frame = recorder.get_frame()
+                    
+                    # Check max video duration
+                    if self.max_video_duration and (recorder.frame_count / self.fps) >= self.max_video_duration:
+                        print(f"\nMax video duration ({self.max_video_duration}s) reached, stopping...")
+                        break
                     
                     if recorder.use_ffmpeg and recorder.ffmpeg_process is None:
                         recorder.start_ffmpeg(frame)
@@ -612,6 +630,11 @@ class UnifiedBibleProcessor:
             for chunk in generator:
                 self.data.extend(chunk)
                 print(f"Received {len(self.data):,} bytes", end="\r")
+                
+                # Check max execution time
+                if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
+                    print(f"\nMax execution time ({self.max_execution_time}s) reached, stopping...")
+                    break
         except Exception as e:
             print(f"\nError during processing: {e}")
             return
@@ -652,6 +675,11 @@ class UnifiedBibleProcessor:
                     f.write(chunk)
                     self.data.extend(chunk)
                     print(f"Written {len(self.data):,} bytes", end="\r")
+                    
+                    # Check max execution time
+                    if self.max_execution_time and (time.time() - self.start_time) > self.max_execution_time:
+                        print(f"\nMax execution time ({self.max_execution_time}s) reached, stopping...")
+                        break
         except Exception as e:
             print(f"\nError writing raw data: {e}")
             return
@@ -715,6 +743,8 @@ def main():
     parser.add_argument('--no-ffmpeg', action='store_true', help='Use OpenCV instead of FFmpeg for video')
     parser.add_argument('--gui', action='store_true', help='Enable GUI preview')
     parser.add_argument('--limit', type=int, help='Limit number of programs to process')
+    parser.add_argument('--max-execution-time', type=float, help='Maximum execution time in seconds')
+    parser.add_argument('--max-video-duration', type=float, help='Maximum video duration in seconds')
     
     args = parser.parse_args()
     
@@ -726,7 +756,9 @@ def main():
         use_cuda=not args.no_cuda,
         use_ffmpeg=not args.no_ffmpeg,
         enable_gui=args.gui,
-        limit=args.limit
+        limit=args.limit,
+        max_execution_time=args.max_execution_time,
+        max_video_duration=args.max_video_duration
     )
     
     processor.run()
