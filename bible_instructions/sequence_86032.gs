@@ -1,0 +1,15 @@
+# Extracted from Bible text
+# Sequence length: 10
+
+ה
+א
+ז
+ו
+ו
+ה
+ו
+ו
+ד
+ה
+
+שב
