@@ -225,7 +225,7 @@ class GematriaInterpreter:
             # Output cell at pointer (.)
             value = self.tape[self.pointer]
             self.output_buffer.append(chr(value))
-            print(chr(value), end='')
+            # print(chr(value), end='')  # Suppress output
             
         elif op == Opcode.IN:
             # Input to cell at pointer (,)

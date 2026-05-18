@@ -110,9 +110,7 @@ class GematriaProcessor:
                     if not self.quiet:
                         output_line = b"%s: %s\n" % (program_name.encode('utf-8'), output_str.encode('utf-8'))
                         yield output_line
-                    else:
-                        # In quiet mode, yield raw output bytes for video/image generation
-                        yield output_bytes
+                    # In quiet mode, don't yield anything to prevent binary spam
                 
                 if i % 10 == 0:
                     elapsed = time.time() - start_time
@@ -260,14 +258,39 @@ class VideoRecorder:
     
     def start_cv2(self, frame):
         """Initialize OpenCV VideoWriter"""
-        h, w = frame.shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.writer = cv2.VideoWriter(self.output_file, fourcc, self.fps, (w, h))
-        if self.writer.isOpened():
-            print(f"OpenCV VideoWriter started: {w}x{h} @ {self.fps}fps")
-        else:
-            print("Failed to initialize OpenCV VideoWriter")
-            self.running = False
+        import sys
+        import io
+        import os
+        
+        # Redirect all outputs to suppress OpenCV warnings/binary output
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        old_devnull = os.open(os.devnull, os.O_WRONLY)
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        
+        try:
+            h, w = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.writer = cv2.VideoWriter(self.output_file, fourcc, self.fps, (w, h))
+            if self.writer.isOpened():
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                print(f"OpenCV VideoWriter started: {w}x{h} @ {self.fps}fps")
+                sys.stdout = io.StringIO()
+                sys.stderr = io.StringIO()
+            else:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                print("Failed to initialize OpenCV VideoWriter")
+                self.running = False
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            try:
+                os.close(old_devnull)
+            except:
+                pass
     
     def write_frame(self, frame):
         """Write frame to video"""
@@ -292,12 +315,7 @@ class VideoRecorder:
         if self.writer:
             self.writer.release()
         
-        print(f"\nVideo saved: {self.output_file}")
-        print(f"Frames: {self.frame_count}")
-        print(f"Bytes: {len(self.data):,}")
-        video_duration = self.frame_count / self.fps if self.fps > 0 else 0
-        print(f"Video duration: {video_duration:.2f}s ({self.frame_count} frames @ {self.fps}fps)")
-        print(f"Processing duration: {time.time() - self.start_time:.1f}s")
+        # Don't print stats here - they're printed by the caller
 
 
 class ScreenRecorder:
@@ -526,6 +544,9 @@ class UnifiedBibleProcessor:
         self.use_cuda = use_cuda
         self.use_ffmpeg = use_ffmpeg
         self.enable_gui = enable_gui
+        # Set default limit for video/image/screen modes to prevent overwhelming output
+        if limit is None and mode in ['video', 'image', 'screen']:
+            limit = 100  # Default to 100 programs for media generation
         self.limit = limit
         self.max_execution_time = max_execution_time
         self.max_video_duration = max_video_duration
@@ -552,6 +573,8 @@ class UnifiedBibleProcessor:
         print(f"Mode: {self.mode}")
         print(f"Output: {self.output_file}")
         print(f"Processing with {'CUDA' if self.use_cuda else 'CPU'}")
+        if self.limit:
+            print(f"Program limit: {self.limit}")
         if self.max_execution_time:
             print(f"Max execution time: {self.max_execution_time}s")
         if self.max_video_duration:
@@ -661,9 +684,6 @@ class UnifiedBibleProcessor:
                     
                     if self.enable_gui and viewer:
                         viewer.update_data(chunk)
-                    
-                    if recorder.frame_count % 10 == 0:
-                        print(f"Frames: {recorder.frame_count:5d} | Bytes: {len(self.data):,} | Programs: {programs_processed}", end="\r")
             
             # Continue generating frames after processing is done to ensure minimum video length
             min_frames = self.fps * 5  # At least 5 seconds of video
@@ -680,13 +700,18 @@ class UnifiedBibleProcessor:
                         recorder.write_frame(frame)
                         recorder.frame_count += 1
                         last_frame_time = time.time()
-                    
-                    if recorder.frame_count % 10 == 0:
-                        print(f"Frames: {recorder.frame_count:5d} | Programs: {programs_processed}", end="\r")
             
             # Ensure writer is properly flushed
             if recorder.writer:
                 recorder.writer.release()
+            
+            # Print final stats
+            print(f"\nVideo saved: {self.output_file}")
+            print(f"Frames: {recorder.frame_count}")
+            print(f"Bytes: {len(self.data):,}")
+            video_duration = recorder.frame_count / self.fps if self.fps > 0 else 0
+            print(f"Video duration: {video_duration:.2f}s ({recorder.frame_count} frames @ {self.fps}fps)")
+            print(f"Processing duration: {time.time() - self.start_time:.1f}s")
         except Exception as e:
             print(f"\nError during video recording: {e}")
         finally:
@@ -703,42 +728,54 @@ class UnifiedBibleProcessor:
     def _generate_synthetic_frame(self, programs_processed, complete=False):
         """Generate a synthetic video frame based on processing state"""
         import numpy as np
+        import sys
+        import io
         
-        # Calculate dimensions based on aspect ratio
-        if self.aspect_ratio:
-            if ':' in self.aspect_ratio:
-                ar_w, ar_h = map(int, self.aspect_ratio.split(':'))
+        # Redirect stdout/stderr to suppress any numpy output
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        
+        try:
+            # Calculate dimensions based on aspect ratio
+            if self.aspect_ratio:
+                if ':' in self.aspect_ratio:
+                    ar_w, ar_h = map(int, self.aspect_ratio.split(':'))
+                else:
+                    ar_w, ar_h = 16, 9  # Default 16:9
             else:
-                ar_w, ar_h = 16, 9  # Default 16:9
-        else:
-            ar_w, ar_h = 1, 1  # Square
-        
-        # Calculate dimensions
-        if ar_w >= ar_h:
-            width = self.max_size
-            height = int(self.max_size * ar_h / ar_w)
-        else:
-            height = self.max_size
-            width = int(self.max_size * ar_w / ar_h)
-        
-        # Ensure even dimensions for video encoding
-        width = width + (width % 2)
-        height = height + (height % 2)
-        
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        
-        # Generate a pattern that changes with programs_processed
-        for i in range(height):
-            for j in range(width):
-                # Create a gradient pattern
-                r = int((i / height) * 255)
-                g = int((j / width) * 255)
-                # Add animation based on frame count and completion
-                offset = programs_processed * 10 + (100 if complete else 0)
-                b = int(((i + j + offset) / ((width + height) / 2)) * 255)
-                frame[i, j] = [r, g, b]
-        
-        return frame
+                ar_w, ar_h = 1, 1  # Square
+            
+            # Calculate dimensions
+            if ar_w >= ar_h:
+                width = self.max_size
+                height = int(self.max_size * ar_h / ar_w)
+            else:
+                height = self.max_size
+                width = int(self.max_size * ar_w / ar_h)
+            
+            # Ensure even dimensions for video encoding
+            width = width + (width % 2)
+            height = height + (height % 2)
+            
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            
+            # Generate a pattern that changes with programs_processed
+            for i in range(height):
+                for j in range(width):
+                    # Create a gradient pattern
+                    r = int((i / height) * 255)
+                    g = int((j / width) * 255)
+                    # Add animation based on frame count and completion
+                    offset = programs_processed * 10 + (100 if complete else 0)
+                    b = int(((i + j + offset) / ((width + height) / 2)) * 255)
+                    frame[i, j] = [r, g, b]
+            
+            return frame
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
     
     def run_image_mode(self):
         """Run final image generation mode"""

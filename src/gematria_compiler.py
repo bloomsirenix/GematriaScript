@@ -236,7 +236,7 @@ class BytecodeInterpreter:
                 value = self.tape[self.pointer]
                 char = chr(value)
                 self.output_buffer.append(char)
-                print(char, end='')
+                # print(char, end='')  # Suppress output
             
             elif byte == 0x06:  # IN
                 if self.interactive:
