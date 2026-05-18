@@ -190,6 +190,15 @@ class VideoRecorder:
         """Initialize FFmpeg for streaming-safe MP4"""
         h, w = frame.shape[:2]
         
+        # Check if FFmpeg is available
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("FFmpeg not found, falling back to OpenCV")
+            self.use_ffmpeg = False
+            self.start_cv2(frame)
+            return
+        
         cmd = [
             'ffmpeg', '-y',
             '-f', 'rawvideo',
@@ -206,15 +215,24 @@ class VideoRecorder:
             self.output_file
         ]
         
-        self.ffmpeg_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        print(f"FFmpeg started: {w}x{h} @ {self.fps}fps")
+        try:
+            self.ffmpeg_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            print(f"FFmpeg started: {w}x{h} @ {self.fps}fps")
+        except Exception as e:
+            print(f"FFmpeg failed to start: {e}, falling back to OpenCV")
+            self.use_ffmpeg = False
+            self.start_cv2(frame)
     
     def start_cv2(self, frame):
         """Initialize OpenCV VideoWriter"""
         h, w = frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.writer = cv2.VideoWriter(self.output_file, fourcc, self.fps, (w, h))
-        print(f"OpenCV VideoWriter started: {w}x{h} @ {self.fps}fps")
+        if self.writer.isOpened():
+            print(f"OpenCV VideoWriter started: {w}x{h} @ {self.fps}fps")
+        else:
+            print("Failed to initialize OpenCV VideoWriter")
+            self.running = False
     
     def write_frame(self, frame):
         """Write frame to video"""
@@ -243,27 +261,6 @@ class VideoRecorder:
         print(f"Frames: {self.frame_count}")
         print(f"Bytes: {len(self.data):,}")
         print(f"Duration: {time.time() - self.start_time:.1f}s")
-
-
-class LiveViewer:
-    """Live GUI viewer for pixel stream"""
-    
-    def __init__(self, root, max_size=1024):
-        self.root = root
-        self.root.title("Unified Bible Gematria Viewer")
-        self.root.configure(bg='black')
-        
-        self.canvas = tk.Canvas(root, bg='black', highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        
-        self.status = ttk.Label(root, text="Waiting for data...", relief=tk.SUNKEN, anchor=tk.W)
-        self.status.pack(side=tk.BOTTOM, fill=tk.X)
-        
-        self.data = bytearray()
-        self.photo = None
-        self.lock = threading.Lock()
-        self.max_size = max_size
-        self.running = True
 
 
 class ScreenRecorder:
@@ -334,6 +331,14 @@ class ScreenRecorder:
         else:
             w, h = 1920, 1080  # Default resolution
         
+        # Check if FFmpeg is available
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("FFmpeg not found, screen recording requires FFmpeg")
+            self.running = False
+            return
+        
         # Start FFmpeg for video only
         cmd = [
             'ffmpeg', '-y',
@@ -349,8 +354,12 @@ class ScreenRecorder:
             self.output_file
         ]
         
-        self.ffmpeg_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"Recording started: {w}x{h} @ {self.fps}fps")
+        try:
+            self.ffmpeg_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+            print(f"Recording started: {w}x{h} @ {self.fps}fps")
+        except Exception as e:
+            print(f"Failed to start FFmpeg: {e}")
+            self.running = False
     
     def process_frames(self):
         """Process frames"""
@@ -527,90 +536,136 @@ class UnifiedBibleProcessor:
     def run_video_mode(self):
         """Run video recording mode"""
         recorder = VideoRecorder(self.output_file, self.fps, self.max_size, self.use_ffmpeg)
+        viewer = None
+        root = None
         
         if self.enable_gui:
-            root = tk.Tk()
-            viewer = LiveViewer(root, self.max_size)
-            viewer.update_display()
-            
-            def gui_thread():
-                root.mainloop()
-            
-            threading.Thread(target=gui_thread, daemon=True).start()
+            try:
+                root = tk.Tk()
+                viewer = LiveViewer(root, self.max_size)
+                viewer.update_display()
+                
+                def gui_thread():
+                    root.mainloop()
+                
+                threading.Thread(target=gui_thread, daemon=True).start()
+            except Exception as e:
+                print(f"Failed to initialize GUI: {e}")
+                self.enable_gui = False
         
         generator = self.processor.process_all_programs(limit=self.limit)
         last_frame_time = time.time()
         
-        for chunk in generator:
-            self.data.extend(chunk)
+        try:
+            for chunk in generator:
+                self.data.extend(chunk)
+                
+                if not recorder.running:
+                    print("Recorder stopped, exiting...")
+                    break
+                
+                if time.time() - last_frame_time >= 1.0 / self.fps:
+                    frame = recorder.get_frame()
+                    
+                    if recorder.use_ffmpeg and recorder.ffmpeg_process is None:
+                        recorder.start_ffmpeg(frame)
+                    elif not recorder.use_ffmpeg and recorder.writer is None:
+                        recorder.start_cv2(frame)
+                    
+                    if recorder.running:
+                        recorder.write_frame(frame)
+                        recorder.frame_count += 1
+                        last_frame_time = time.time()
+                    
+                    if self.enable_gui and viewer:
+                        viewer.update_data(chunk)
+                    
+                    if recorder.frame_count % 10 == 0:
+                        print(f"Frames: {recorder.frame_count:5d} | Bytes: {len(self.data):,}", end="\r")
+        except Exception as e:
+            print(f"\nError during video recording: {e}")
+        finally:
+            recorder.cleanup()
             
-            if time.time() - last_frame_time >= 1.0 / self.fps and recorder.running:
-                frame = recorder.get_frame()
-                
-                if recorder.use_ffmpeg and recorder.ffmpeg_process is None:
-                    recorder.start_ffmpeg(frame)
-                elif not recorder.use_ffmpeg and recorder.writer is None:
-                    recorder.start_cv2(frame)
-                
-                recorder.write_frame(frame)
-                recorder.frame_count += 1
-                last_frame_time = time.time()
-                
-                if self.enable_gui:
-                    viewer.update_data(chunk)
-                
-                if recorder.frame_count % 10 == 0:
-                    print(f"Frames: {recorder.frame_count:5d} | Bytes: {len(self.data):,}", end="\r")
-        
-        recorder.cleanup()
-        
-        if self.enable_gui:
-            viewer.stop()
-            root.quit()
+            if self.enable_gui and viewer:
+                try:
+                    viewer.stop()
+                    if root:
+                        root.quit()
+                except:
+                    pass
     
     def run_image_mode(self):
         """Run final image generation mode"""
         generator = self.processor.process_all_programs(limit=self.limit)
         
-        for chunk in generator:
-            self.data.extend(chunk)
-            print(f"Received {len(self.data):,} bytes", end="\r")
+        try:
+            for chunk in generator:
+                self.data.extend(chunk)
+                print(f"Received {len(self.data):,} bytes", end="\r")
+        except Exception as e:
+            print(f"\nError during processing: {e}")
+            return
         
         print(f"\nGenerating image from {len(self.data):,} bytes...")
-        frame = ImageGenerator.bytes_to_image(self.data, self.max_size)
+        
+        try:
+            frame = ImageGenerator.bytes_to_image(self.data, self.max_size)
+        except Exception as e:
+            print(f"Error generating image: {e}")
+            return
         
         if self.enable_gui:
-            root = tk.Tk()
-            viewer = LiveViewer(root, self.max_size)
-            viewer.data = self.data
-            viewer.update_display()
-            root.mainloop()
+            try:
+                root = tk.Tk()
+                viewer = LiveViewer(root, self.max_size)
+                viewer.data = self.data
+                viewer.update_display()
+                root.mainloop()
+            except Exception as e:
+                print(f"GUI error: {e}")
         
-        cv2.imwrite(self.output_file, frame)
-        print(f"Image saved: {self.output_file}")
-        print(f"Size: {frame.shape[1]}x{frame.shape[0]}")
+        try:
+            cv2.imwrite(self.output_file, frame)
+            print(f"Image saved: {self.output_file}")
+            print(f"Size: {frame.shape[1]}x{frame.shape[0]}")
+        except Exception as e:
+            print(f"Error saving image: {e}")
     
     def run_raw_mode(self):
         """Run raw byte output mode"""
         generator = self.processor.process_all_programs(limit=self.limit)
         
-        with open(self.output_file, 'wb') as f:
-            for chunk in generator:
-                f.write(chunk)
-                self.data.extend(chunk)
-                print(f"Written {len(self.data):,} bytes", end="\r")
+        try:
+            with open(self.output_file, 'wb') as f:
+                for chunk in generator:
+                    f.write(chunk)
+                    self.data.extend(chunk)
+                    print(f"Written {len(self.data):,} bytes", end="\r")
+        except Exception as e:
+            print(f"\nError writing raw data: {e}")
+            return
         
         print(f"\nRaw data saved: {self.output_file}")
         print(f"Total bytes: {len(self.data):,}")
     
     def run_screen_mode(self):
         """Run screen recording with audio mode"""
-        root = tk.Tk()
-        viewer = LiveViewer(root, self.max_size)
+        try:
+            root = tk.Tk()
+            viewer = LiveViewer(root, self.max_size)
+        except Exception as e:
+            print(f"Failed to initialize GUI: {e}")
+            print("Screen mode requires GUI support")
+            return
         
         # Start screen recorder
         recorder = ScreenRecorder(self.output_file, self.fps)
         recorder.start_recording(window=root)
+        
+        if not recorder.running:
+            print("Failed to start screen recorder")
+            return
         
         # Start frame processing in background
         def process_frames_thread():
@@ -621,8 +676,11 @@ class UnifiedBibleProcessor:
         # Process gematria programs and update viewer
         def process_thread():
             generator = self.processor.process_all_programs(limit=self.limit)
-            for chunk in generator:
-                viewer.update_data(chunk)
+            try:
+                for chunk in generator:
+                    viewer.update_data(chunk)
+            except Exception as e:
+                print(f"Error processing programs: {e}")
         
         threading.Thread(target=process_thread, daemon=True).start()
         viewer.update_display()
@@ -630,6 +688,8 @@ class UnifiedBibleProcessor:
         # Run GUI and stop recording when window closes
         try:
             root.mainloop()
+        except Exception as e:
+            print(f"GUI error: {e}")
         finally:
             recorder.stop_recording()
 
